@@ -8,7 +8,7 @@ import os
 import asyncio
 from typing import Any
 
-# ── LangSmith Tracing ─────────────────────────────────────────────────────────
+# LangSmith tracing
 
 # Configure sua API key via variável de ambiente ou .env:
 # export LANGCHAIN_API_KEY="lsv2_..."
@@ -17,7 +17,7 @@ import chainlit as cl
 from graph import agent_graph, AgentState
 from tools import init_browser, close_browser
 
-# ── Ícones por tipo de nó ─────────────────────────────────────────────────────
+# Ícones por tipo de nó
 NODE_ICONS = {
     "intent_analysis": "🔍",
     "plan_generation": "📋",
@@ -34,7 +34,7 @@ NODE_LABELS = {
     "completion": "Finalização",
 }
 
-# ── Formatação de log para Chainlit ──────────────────────────────────────────
+# Formatação de log para Chainlit
 
 
 def format_log_entry(entry: dict) -> str:
@@ -102,7 +102,7 @@ def format_log_entry(entry: dict) -> str:
     return str(entry)
 
 
-# ── Chainlit Handlers ─────────────────────────────────────────────────────────
+# Handlers do Chainlit
 
 
 @cl.on_chat_start
@@ -215,7 +215,7 @@ async def on_message(message: cl.Message):
     ).send()
 
 
-# ── Entry point direto ────────────────────────────────────────────────────────
+# Entry point direto
 
 if __name__ == "__main__":
     # Para rodar: chainlit run main.py -w
