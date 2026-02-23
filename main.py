@@ -1,135 +1,132 @@
 """
-main.py - Interface Chainlit com visualização de cada etapa via cl.Step().
+main.py - Chainlit interface with step-by-step visualization via cl.Step().
 
-Ativa LangSmith tracing e conecta o grafo LangGraph ao chat.
+Enables LangSmith tracing and connects the LangGraph workflow to chat.
 """
 
-import os
 import asyncio
-from typing import Any
+
+import chainlit as cl
+
+from graph import AgentState, agent_graph
+from tools import close_browser, init_browser
 
 # LangSmith tracing
 
-# Configure sua API key via variável de ambiente ou .env:
-# export LANGCHAIN_API_KEY="lsv2_..."
 
-import chainlit as cl
-from graph import agent_graph, AgentState
-from tools import init_browser, close_browser
-
-# Ícones por tipo de nó
+# Icons per node type
 NODE_ICONS = {
-    "intent_analysis": "🔍",
-    "plan_generation": "📋",
-    "tool_execution": "⚙️",
-    "validation": "✅",
-    "completion": "🏁",
+    "intent_analysis": "[I]",
+    "plan_generation": "[P]",
+    "tool_execution": "[T]",
+    "validation": "[V]",
+    "completion": "[C]",
 }
 
 NODE_LABELS = {
-    "intent_analysis": "Análise de Intenção",
-    "plan_generation": "Geração do Plano",
-    "tool_execution": "Execução de Ferramenta",
-    "validation": "Validação do Resultado",
-    "completion": "Finalização",
+    "intent_analysis": "Intent Analysis",
+    "plan_generation": "Plan Generation",
+    "tool_execution": "Tool Execution",
+    "validation": "Result Validation",
+    "completion": "Completion",
 }
 
-# Formatação de log para Chainlit
+# Log formatting for Chainlit
 
 
 def format_log_entry(entry: dict) -> str:
-    """Formata uma entrada de log para exibição no Chainlit."""
+    """Formats a log entry for Chainlit display."""
     node = entry.get("node", "")
 
     if node == "intent_analysis":
         details = entry.get("details", {})
         lines = [
-            f"**Intenção identificada:** {entry.get('intent', '')}",
-            f"**Domínio alvo:** {details.get('target_domain', 'N/A')}",
-            f"**Ação principal:** {details.get('main_action', 'N/A')}",
+            f"**Identified Intent:** {entry.get('intent', '')}",
+            f"**Target Domain:** {details.get('target_domain', 'N/A')}",
+            f"**Main Action:** {details.get('main_action', 'N/A')}",
         ]
         constraints = details.get("semantic_constraints", [])
         if constraints:
-            lines.append("**Restrições semânticas:**")
-            for c in constraints:
-                lines.append(f"  - {c}")
+            lines.append("**Semantic Constraints:**")
+            for constraint in constraints:
+                lines.append(f"  - {constraint}")
         return "\n".join(lines)
 
-    elif node == "plan_generation":
+    if node == "plan_generation":
         plan = entry.get("plan", [])
-        lines = [f"**Plano gerado com {len(plan)} passo(s):**\n"]
+        lines = [f"**Generated plan with {len(plan)} step(s):**\n"]
         for step in plan:
-            s = step.get("step", "?")
+            step_number = step.get("step", "?")
             action = step.get("action", "")
-            desc = step.get("description", "")
-            inp = step.get("input", "")
-            lines.append(f"**{s}.** `{action}` — {desc}")
-            if inp:
-                inp_str = str(inp)[:100]
-                lines.append(f"   _Input:_ `{inp_str}`")
+            description = step.get("description", "")
+            step_input = step.get("input", "")
+            lines.append(f"**{step_number}.** `{action}` - {description}")
+            if step_input:
+                input_preview = str(step_input)[:100]
+                lines.append(f"   _Input:_ `{input_preview}`")
         return "\n".join(lines)
 
-    elif node == "tool_execution":
-        step = entry.get("step", "?")
+    if node == "tool_execution":
+        step_number = entry.get("step", "?")
         action = entry.get("action", "")
-        inp = str(entry.get("input", ""))[:150]
+        step_input = str(entry.get("input", ""))[:150]
         result = str(entry.get("result", ""))[:400]
         return (
-            f"**Passo {step}:** `{action}`\n"
-            f"**Input:** `{inp}`\n\n"
-            f"**Resultado:**\n```\n{result}\n```"
+            f"**Step {step_number}:** `{action}`\n"
+            f"**Input:** `{step_input}`\n\n"
+            f"**Result:**\n```\n{result}\n```"
         )
 
-    elif node == "validation":
-        v = entry.get("validation", {})
-        success = "✅ Sucesso" if v.get("success") else "⚠️ Problema"
-        can_cont = "Sim" if v.get("can_continue") else "Não"
-        notes = v.get("notes", "")
-        extracted = v.get("extracted_info", "")
+    if node == "validation":
+        validation_data = entry.get("validation", {})
+        success_text = "Success" if validation_data.get("success") else "Issue"
+        can_continue_text = "Yes" if validation_data.get("can_continue") else "No"
+        notes = validation_data.get("notes", "")
+        extracted_info = validation_data.get("extracted_info", "")
         lines = [
-            f"**Status:** {success}",
-            f"**Continuar:** {can_cont}",
+            f"**Status:** {success_text}",
+            f"**Can Continue:** {can_continue_text}",
         ]
         if notes:
-            lines.append(f"**Notas:** {notes}")
-        if extracted:
-            lines.append(f"**Info extraída:** {extracted}")
+            lines.append(f"**Notes:** {notes}")
+        if extracted_info:
+            lines.append(f"**Extracted Info:** {extracted_info}")
         return "\n".join(lines)
 
-    elif node == "completion":
-        return entry.get("final_answer", "Concluído.")
+    if node == "completion":
+        return entry.get("final_answer", "Completed.")
 
     return str(entry)
 
 
-# Handlers do Chainlit
+# Chainlit handlers
 
 
 @cl.on_chat_start
 async def on_start():
-    """Inicializa o browser quando o chat começa."""
+    """Initializes the browser when chat starts."""
     await cl.Message(
         content=(
-            "🤖 **Agente Web Autônomo iniciado!**\n\n"
-            "Posso navegar na web, clicar em elementos, preencher formulários e muito mais.\n\n"
-            "**Exemplos de uso:**\n"
-            "- *Entre no YouTube e abra um vídeo aleatório*\n"
-            "- *Pesquise por apartamentos no Airbnb em São Paulo*\n"
-            "- *Acesse o site da Globo e leia a manchete principal*\n\n"
-            "Inicializando o navegador... 🌐"
+            "**Autonomous Web Agent started**\n\n"
+            "I can browse the web, click elements, fill forms, and more.\n\n"
+            "**Example requests:**\n"
+            "- *Open YouTube and play a random video*\n"
+            "- *Search Airbnb apartments in Sao Paulo*\n"
+            "- *Open BBC and read the top headline*\n\n"
+            "Initializing browser..."
         )
     ).send()
 
-    # Inicializa o browser (headless=False para ver o navegador em ação)
+    # Initialize browser (headless=False to watch execution)
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, lambda: init_browser(headless=False))
 
-    await cl.Message(content="✅ Navegador pronto! Digite sua solicitação.").send()
+    await cl.Message(content="Browser ready. Type your request.").send()
 
 
 @cl.on_chat_end
 async def on_end():
-    """Fecha o browser quando o chat termina."""
+    """Closes the browser when chat ends."""
     try:
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, close_browser)
@@ -140,14 +137,14 @@ async def on_end():
 @cl.on_message
 async def on_message(message: cl.Message):
     """
-    Handler principal: recebe a mensagem do usuário, executa o grafo
-    e exibe cada etapa usando cl.Step().
+    Main handler: receives user input, runs the graph,
+    and displays each step using cl.Step().
     """
     user_input = message.content.strip()
     if not user_input:
         return
 
-    # Estado inicial do agente
+    # Initial agent state
     initial_state: AgentState = {
         "user_input": user_input,
         "intent": "",
@@ -161,12 +158,12 @@ async def on_message(message: cl.Message):
         "_validation": {},
     }
 
-    # Mensagem de início
+    # Start message
     await cl.Message(
-        content=f"🚀 Processando: *{user_input}*\n\nIniciando pipeline do agente..."
+        content=f"Processing: *{user_input}*\n\nStarting agent pipeline..."
     ).send()
 
-    # Executa o grafo de forma síncrona em thread separada
+    # Run graph synchronously in a separate thread
     loop = asyncio.get_event_loop()
 
     def run_graph():
@@ -174,49 +171,47 @@ async def on_message(message: cl.Message):
 
     try:
         final_state = await loop.run_in_executor(None, run_graph)
-    except Exception as e:
-        await cl.Message(content=f"❌ Erro crítico na execução: {e}").send()
+    except Exception as exc:
+        await cl.Message(content=f"Critical execution error: {exc}").send()
         return
 
-    # Exibe cada etapa usando cl.Step()
+    # Show each step using cl.Step()
     step_log = final_state.get("step_log", [])
-    seen_nodes = set()
 
     for entry in step_log:
         node = entry.get("node", "unknown")
-        icon = NODE_ICONS.get(node, "▶️")
+        icon = NODE_ICONS.get(node, "[>]")
         label = NODE_LABELS.get(node, node)
         content = format_log_entry(entry)
 
-        # Para tool_execution, cria um step por execução (não agrupa)
+        # For tool_execution, create one step per tool call
         step_name = f"{icon} {label}"
         if node == "tool_execution":
-            step_num = entry.get("step", "?")
+            step_number = entry.get("step", "?")
             action = entry.get("action", "")
-            step_name = f"{icon} Passo {step_num}: {action}"
+            step_name = f"{icon} Step {step_number}: {action}"
 
         async with cl.Step(name=step_name) as step:
             step.output = content
 
-        # Pequena pausa para melhor UX
+        # Small pause for better UX
         await asyncio.sleep(0.1)
 
-    # Resposta final
-    final_answer = final_state.get("final_answer", "Tarefa concluída.")
+    # Final response
+    final_answer = final_state.get("final_answer", "Task completed.")
     total_steps = len(final_state.get("results_history", []))
 
     await cl.Message(
         content=(
-            f"---\n"
-            f"### 🏁 Resultado Final\n\n"
+            "---\n"
+            "### Final Result\n\n"
             f"{final_answer}\n\n"
-            f"*{total_steps} ação(ões) executada(s).*"
+            f"*{total_steps} action(s) executed.*"
         )
     ).send()
 
 
-# Entry point direto
-
+# Direct entry point
 if __name__ == "__main__":
-    # Para rodar: chainlit run main.py -w
-    print("Execute com: chainlit run main.py -w")
+    # To run: chainlit run main.py -w
+    print("Run with: chainlit run main.py -w")
