@@ -13,7 +13,7 @@ from typing import Optional
 from langchain_core.tools import tool
 from playwright.sync_api import sync_playwright, Page, Browser, Playwright
 
-# ── Estado global do browser ─────────────────────────────────────────────────
+# Estado global do browser
 _playwright: Optional[Playwright] = None
 _browser: Optional[Browser] = None
 _page: Optional[Page] = None
@@ -55,7 +55,7 @@ def get_page() -> Page:
     return _page
 
 
-# ── Tools ─────────────────────────────────────────────────────────────────────
+# Tools
 
 @tool
 def search_web(query: str) -> str:
