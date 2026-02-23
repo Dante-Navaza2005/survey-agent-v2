@@ -1,52 +1,54 @@
 """
-graph.py - Fluxo multi-step com LangGraph.
+graph.py - Multi-step LangGraph workflow.
 
-Nós do grafo:
-  1. intent_analysis   – Analisa semanticamente a intenção do usuário
-  2. plan_generation   – Gera plano estruturado em JSON
-  3. tool_execution    – Executa uma tool do plano
-  4. validation        – Valida o resultado antes de avançar
-  5. completion        – Finaliza e sintetiza o resultado
+Graph nodes:
+  1. intent_analysis   - Semantically analyzes the user intent
+  2. plan_generation   - Builds a structured JSON plan
+  3. tool_execution    - Executes one tool from the plan
+  4. validation        - Validates the result before proceeding
+  5. completion        - Finalizes and summarizes the result
 
-O estado é mantido em AgentState (TypedDict).
+State is stored in AgentState (TypedDict).
 """
 
 import json
 import re
-from typing import Annotated, Any, TypedDict
+from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
-from langgraph.graph.message import add_messages
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 
 from llm import get_llm
-from tools import ALL_TOOLS, search_web, open_url, click_element, type_text, extract_page_elements, get_current_url, scroll_page
+from tools import ALL_TOOLS
 
-# Mapa nome → função
-TOOL_MAP = {t.name: t for t in ALL_TOOLS}
+# Map tool name -> tool function
+TOOL_MAP = {tool.name: tool for tool in ALL_TOOLS}
 
-# Estado do agente
+# Agent state
+
 
 class AgentState(TypedDict):
-    user_input: str          # Mensagem original do usuário
-    intent: str              # Intenção analisada
-    plan: list               # Lista de passos [{step, action, input}]
-    current_step: int        # Índice do passo atual
-    last_result: str         # Resultado da última tool
-    results_history: list    # Histórico de todos os resultados
-    final_answer: str        # Resposta final ao usuário
-    error: str               # Mensagem de erro (se houver)
-    step_log: list           # Log detalhado para Chainlit
+    user_input: str  # Original user message
+    intent: str  # Analyzed intent summary
+    plan: list  # Step list [{step, action, input}]
+    current_step: int  # Current step index
+    last_result: str  # Last tool output
+    results_history: list  # History of all step outputs
+    final_answer: str  # Final answer for the user
+    error: str  # Error message (if any)
+    step_log: list  # Detailed log for Chainlit
+    _validation: dict  # Validation cache for routing
+
 
 # LLM
-
 llm = get_llm()
 
 # Helpers
 
+
 def extract_json(text: str) -> Any:
-    """Extrai o primeiro bloco JSON válido de uma string."""
-    # Tenta extrair de bloco ```json ... ```
+    """Extracts the first valid JSON block from a string."""
+    # Try fenced block: ```json ... ```
     match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if match:
         try:
@@ -54,7 +56,7 @@ def extract_json(text: str) -> Any:
         except Exception:
             pass
 
-    # Tenta encontrar array JSON direto
+    # Try direct JSON array
     match = re.search(r"\[[\s\S]*\]", text)
     if match:
         try:
@@ -62,7 +64,7 @@ def extract_json(text: str) -> Any:
         except Exception:
             pass
 
-    # Tenta objeto JSON direto
+    # Try direct JSON object
     match = re.search(r"\{[\s\S]*\}", text)
     if match:
         try:
@@ -70,24 +72,32 @@ def extract_json(text: str) -> Any:
         except Exception:
             pass
 
-    raise ValueError(f"Nenhum JSON válido encontrado na resposta: {text[:300]}")
+    raise ValueError(f"No valid JSON found in response: {text[:300]}")
+
 
 
 def semantic_url_check(intent: str, url: str) -> bool:
     """
-    Verifica semanticamente se a URL corresponde à intenção do usuário.
-    Retorna False se houver desvio semântico.
+    Checks whether a URL semantically matches the user's intent.
+    Returns False when a semantic mismatch is detected.
     """
     intent_lower = intent.lower()
     url_lower = url.lower()
 
-    # Regra: se intenção menciona YouTube, a URL deve conter youtube.com
+    # If intent mentions YouTube, URL must contain youtube.com
     if "youtube" in intent_lower and "youtube.com" not in url_lower:
         return False
 
-    # Regra: se intenção menciona domínio específico, verifica presença
-    known_domains = ["google.com", "instagram.com", "facebook.com", "twitter.com",
-                     "linkedin.com", "github.com", "amazon.com"]
+    # If intent mentions a known domain, ensure domain matches
+    known_domains = [
+        "google.com",
+        "instagram.com",
+        "facebook.com",
+        "twitter.com",
+        "linkedin.com",
+        "github.com",
+        "amazon.com",
+    ]
     for domain in known_domains:
         name = domain.split(".")[0]
         if name in intent_lower and domain not in url_lower:
@@ -96,29 +106,30 @@ def semantic_url_check(intent: str, url: str) -> bool:
     return True
 
 
-# Nós do grafo
+# Graph nodes
+
 
 def intent_analysis(state: AgentState) -> AgentState:
     """
-    Nó 1: Analisa semanticamente a intenção do usuário.
-    Diferencia intenção explícita de URL literal e identifica o objetivo real.
+    Node 1: Semantically analyzes user intent.
+    Distinguishes explicit intent from literal URL text and captures the real goal.
     """
-    prompt = f"""Você é um agente web especialista em análise semântica.
+    prompt = f"""You are a web agent specialized in semantic intent analysis.
 
-Analise a seguinte solicitação do usuário e extraia:
-1. A intenção real (o que o usuário quer fazer)
-2. O domínio/serviço alvo (YouTube, site específico, etc.)
-3. A ação principal (navegar, clicar, preencher, extrair, etc.)
-4. Restrições semânticas importantes (ex: usar SOMENTE youtube.com, não sites alternativos)
+Analyze the user request below and extract:
+1. The real intent (what the user wants to do)
+2. The target domain/service (YouTube, a specific site, etc.)
+3. The main action (navigate, click, fill, extract, etc.)
+4. Important semantic constraints (e.g., use ONLY youtube.com, not alternative sites)
 
-Solicitação: "{state['user_input']}"
+User request: "{state['user_input']}"
 
-Responda em JSON com o seguinte formato:
+Respond in JSON with this format:
 {{
-  "intent_summary": "resumo claro da intenção",
-  "target_domain": "domínio ou serviço alvo (null se não especificado)",
-  "main_action": "ação principal",
-  "semantic_constraints": ["lista de restrições semânticas importantes"],
+  "intent_summary": "clear intent summary",
+  "target_domain": "target domain or service (null if not specified)",
+  "main_action": "main action",
+  "semantic_constraints": ["list of important semantic constraints"],
   "needs_search": true/false
 }}"""
 
@@ -143,43 +154,44 @@ Responda em JSON com o seguinte formato:
     }
 
 
+
 def plan_generation(state: AgentState) -> AgentState:
     """
-    Nó 2: Gera um plano estruturado em JSON com todos os passos necessários.
-    O agente NUNCA executa sem planejamento prévio.
+    Node 2: Creates a structured JSON plan with all required steps.
+    The agent NEVER executes actions without a prior plan.
     """
-    tools_desc = "\n".join([f"- {t.name}: {t.description}" for t in ALL_TOOLS])
+    tools_desc = "\n".join([f"- {tool.name}: {tool.description}" for tool in ALL_TOOLS])
 
-    prompt = f"""Você é um agente web autônomo. Crie um plano de execução DETALHADO.
+    prompt = f"""You are an autonomous web agent. Create a DETAILED execution plan.
 
-Intenção do usuário: "{state['intent']}"
-Solicitação original: "{state['user_input']}"
+User intent: "{state['intent']}"
+Original request: "{state['user_input']}"
 
-Ferramentas disponíveis:
+Available tools:
 {tools_desc}
 
-REGRAS CRÍTICAS:
-1. NUNCA hardcode URLs - sempre use search_web primeiro para descobrir URLs oficiais
-2. Se a intenção menciona YouTube, a URL DEVE ser youtube.com (não sites alternativos)
-3. Sempre verifique elementos da página com extract_page_elements antes de clicar
-4. Planeje passo a passo, sem pular etapas
-5. Se precisar de URL de um site específico, use search_web como primeiro passo
+CRITICAL RULES:
+1. NEVER hardcode URLs - always use search_web first to discover official URLs
+2. If intent mentions YouTube, URL MUST be youtube.com (not alternative websites)
+3. Always inspect page elements with extract_page_elements before clicking
+4. Plan step by step without skipping stages
+5. If a specific site URL is needed, use search_web as the first step
 
-Gere um plano como lista JSON:
+Generate a JSON list:
 [
   {{
     "step": 1,
-    "action": "nome_da_tool",
-    "input": "parâmetro para a tool",
-    "description": "o que este passo faz"
+    "action": "tool_name",
+    "input": "tool parameter",
+    "description": "what this step does"
   }},
   ...
 ]
 
-Para tools com múltiplos parâmetros (type_text), use:
+For tools with multiple parameters (type_text), use:
   "input": {{"selector": "...", "text": "..."}}
 
-Seja específico e completo. Gere SOMENTE o JSON, sem texto adicional."""
+Be specific and complete. Output ONLY JSON, with no extra text."""
 
     response = llm.invoke([HumanMessage(content=prompt)])
 
@@ -187,14 +199,14 @@ Seja específico e completo. Gere SOMENTE o JSON, sem texto adicional."""
         plan = extract_json(response.content)
         if not isinstance(plan, list):
             plan = [plan]
-    except Exception as e:
-        # Plano de fallback mínimo
+    except Exception:
+        # Minimal fallback plan
         plan = [
             {
                 "step": 1,
                 "action": "search_web",
                 "input": state["user_input"],
-                "description": "Busca inicial sobre a solicitação",
+                "description": "Initial search for the request",
             }
         ]
 
@@ -213,55 +225,62 @@ Seja específico e completo. Gere SOMENTE o JSON, sem texto adicional."""
     }
 
 
+
 def tool_execution(state: AgentState) -> AgentState:
     """
-    Nó 3: Executa a tool correspondente ao passo atual do plano.
-    Suporta chamadas com parâmetro único ou múltiplos parâmetros.
+    Node 3: Executes the tool for the current plan step.
+    Supports single-parameter and multi-parameter tool calls.
     """
     plan = state["plan"]
     idx = state["current_step"]
 
     if idx >= len(plan):
-        return {**state, "last_result": "Plano concluído.", "current_step": idx}
+        return {**state, "last_result": "Plan completed.", "current_step": idx}
 
     step = plan[idx]
     action = step.get("action", "")
-    inp = step.get("input", "")
+    step_input = step.get("input", "")
     description = step.get("description", action)
 
     tool_fn = TOOL_MAP.get(action)
     if not tool_fn:
-        result = f"Tool '{action}' não encontrada."
+        result = f"Tool '{action}' not found."
     else:
         try:
-            # Verifica restrição semântica para open_url
-            if action == "open_url" and isinstance(inp, str):
-                if not semantic_url_check(state.get("intent", ""), inp):
+            # Semantic guard for open_url
+            if action == "open_url" and isinstance(step_input, str):
+                if not semantic_url_check(state.get("intent", ""), step_input):
                     result = (
-                        f"⚠️ URL '{inp}' foi BLOQUEADA por violar restrição semântica. "
-                        f"A intenção é '{state['intent']}' e esta URL não corresponde ao domínio esperado."
+                        f"URL '{step_input}' was BLOCKED due to semantic mismatch. "
+                        f"Intent is '{state['intent']}', and this URL does not match the expected domain."
                     )
                 else:
-                    result = tool_fn.invoke(inp)
-            elif isinstance(inp, dict):
-                # Múltiplos parâmetros (ex: type_text)
-                result = tool_fn.invoke(inp)
+                    result = tool_fn.invoke(step_input)
+            elif isinstance(step_input, dict):
+                # Multiple parameters (e.g., type_text)
+                result = tool_fn.invoke(step_input)
             else:
-                result = tool_fn.invoke(str(inp))
-        except Exception as e:
-            result = f"Erro na execução de '{action}': {e}"
+                result = tool_fn.invoke(str(step_input))
+        except Exception as exc:
+            result = f"Error executing '{action}': {exc}"
 
     history = state.get("results_history", []) + [
-        {"step": idx + 1, "action": action, "input": inp, "result": result, "description": description}
+        {
+            "step": idx + 1,
+            "action": action,
+            "input": step_input,
+            "result": result,
+            "description": description,
+        }
     ]
 
     log_entry = {
         "node": "tool_execution",
         "step": idx + 1,
         "action": action,
-        "input": inp,
+        "input": step_input,
         "description": description,
-        "result": result[:500],  # Trunca para log
+        "result": result[:500],  # Trim for log readability
     }
 
     return {
@@ -273,113 +292,132 @@ def tool_execution(state: AgentState) -> AgentState:
     }
 
 
+
 def validation(state: AgentState) -> AgentState:
     """
-    Nó 4: Valida o resultado da última tool antes de avançar.
-    Detecta erros, bloqueios, ou necessidade de ajuste.
+    Node 4: Validates the latest tool result before moving on.
+    Detects failures, blocks, or needed adjustments.
     """
-    last = state.get("last_result", "")
-    current = state.get("current_step", 0)
+    last_result = state.get("last_result", "")
+    current_step = state.get("current_step", 0)
     plan = state.get("plan", [])
 
-    # Verifica se há erro crítico
-    has_error = any(kw in last.lower() for kw in ["erro", "error", "exception", "not found", "timeout", "bloqueada"])
+    # Check for critical errors
+    has_error = any(
+        keyword in last_result.lower()
+        for keyword in [
+            "error",
+            "exception",
+            "not found",
+            "timeout",
+            "blocked",
+        ]
+    )
 
-    # Verifica se ainda há passos
-    has_more = current < len(plan)
+    # Check whether more steps remain
+    has_more_steps = current_step < len(plan)
 
-    prompt = f"""Você é um validador de agente web.
+    prompt = f"""You are a web-agent validator.
 
-Resultado da última ação: "{last[:600]}"
-Passo atual: {current} de {len(plan)}
-Ainda há mais passos: {has_more}
-Detectou erro: {has_error}
+Latest action result: "{last_result[:600]}"
+Current step: {current_step} of {len(plan)}
+More steps remaining: {has_more_steps}
+Error detected: {has_error}
 
-Avalie se:
-1. O resultado indica sucesso ou falha
-2. É seguro continuar para o próximo passo
-3. Há alguma informação relevante a extrair do resultado
+Evaluate whether:
+1. The result indicates success or failure
+2. It is safe to continue to the next step
+3. There is relevant information to extract from the result
 
-Responda em JSON:
+Respond in JSON:
 {{
   "success": true/false,
   "can_continue": true/false,
-  "notes": "observações sobre o resultado",
-  "extracted_info": "informação útil extraída (ex: URL encontrada, elementos visíveis, etc.)"
+  "notes": "observations about the result",
+  "extracted_info": "useful extracted information (e.g., discovered URL, visible elements, etc.)"
 }}"""
 
     try:
         response = llm.invoke([HumanMessage(content=prompt)])
         data = extract_json(response.content)
     except Exception:
-        data = {"success": not has_error, "can_continue": has_more, "notes": "", "extracted_info": ""}
+        data = {
+            "success": not has_error,
+            "can_continue": has_more_steps,
+            "notes": "",
+            "extracted_info": "",
+        }
 
     log_entry = {
         "node": "validation",
-        "step_validated": current,
+        "step_validated": current_step,
         "validation": data,
     }
 
     return {
         **state,
         "step_log": state.get("step_log", []) + [log_entry],
-        # Armazena resultado da validação para uso no router
+        # Store validation for the router decision
         "_validation": data,
     }
 
 
+
 def completion(state: AgentState) -> AgentState:
     """
-    Nó 5: Sintetiza todos os resultados e gera resposta final ao usuário.
+    Node 5: Synthesizes all results and produces the final user response.
     """
     history = state.get("results_history", [])
-    history_text = "\n".join([
-        f"Passo {h['step']} ({h['action']}): {str(h['result'])[:300]}"
-        for h in history
-    ])
+    history_text = "\n".join(
+        [f"Step {item['step']} ({item['action']}): {str(item['result'])[:300]}" for item in history]
+    )
 
-    prompt = f"""Você é um agente web que completou uma tarefa.
+    prompt = f"""You are a web agent that just completed a task.
 
-Tarefa original: "{state['user_input']}"
-Intenção: "{state.get('intent', '')}"
+Original task: "{state['user_input']}"
+Intent: "{state.get('intent', '')}"
 
-Histórico de execução:
+Execution history:
 {history_text}
 
-Gere um resumo claro e objetivo do que foi realizado, incluindo:
-- O que foi feito com sucesso
-- Resultados obtidos
-- Se a tarefa foi concluída ou precisa de intervenção humana
-- Próximos passos sugeridos (se aplicável)
+Generate a clear and objective summary of what was done, including:
+- What was completed successfully
+- Results obtained
+- Whether the task is complete or needs human intervention
+- Suggested next steps (if applicable)
 
-Responda em português, de forma concisa e útil."""
+Respond in concise and useful English."""
 
     try:
         response = llm.invoke([HumanMessage(content=prompt)])
-        final = response.content
-    except Exception as e:
-        final = f"Tarefa executada com {len(history)} passos. Último resultado: {state.get('last_result', '')[:200]}"
+        final_answer = response.content
+    except Exception:
+        final_answer = (
+            f"Task executed with {len(history)} steps. "
+            f"Last result: {state.get('last_result', '')[:200]}"
+        )
 
     log_entry = {
         "node": "completion",
-        "final_answer": final,
+        "final_answer": final_answer,
     }
 
     return {
         **state,
-        "final_answer": final,
+        "final_answer": final_answer,
         "step_log": state.get("step_log", []) + [log_entry],
     }
 
 
-# Routers (condicionais)
+# Routers (conditional)
+
 
 def should_continue(state: AgentState) -> str:
-    """Decide se deve continuar executando ou ir para completion."""
-    current = state.get("current_step", 0)
+    """Decides whether to continue execution or move to completion."""
+    current_step = state.get("current_step", 0)
     plan = state.get("plan", [])
 
-    if current >= len(plan):
+    if current_step >= len(plan):
         return "completion"
 
     validation_data = state.get("_validation", {})
@@ -391,27 +429,28 @@ def should_continue(state: AgentState) -> str:
     return "tool_execution"
 
 
-# Construção do grafo
+# Graph construction
+
 
 def build_graph() -> StateGraph:
-    """Constrói e compila o grafo LangGraph."""
-    g = StateGraph(AgentState)
+    """Builds and compiles the LangGraph workflow."""
+    graph = StateGraph(AgentState)
 
-    # Adiciona nós
-    g.add_node("intent_analysis", intent_analysis)
-    g.add_node("plan_generation", plan_generation)
-    g.add_node("tool_execution", tool_execution)
-    g.add_node("validation", validation)
-    g.add_node("completion", completion)
+    # Add nodes
+    graph.add_node("intent_analysis", intent_analysis)
+    graph.add_node("plan_generation", plan_generation)
+    graph.add_node("tool_execution", tool_execution)
+    graph.add_node("validation", validation)
+    graph.add_node("completion", completion)
 
-    # Fluxo linear inicial
-    g.set_entry_point("intent_analysis")
-    g.add_edge("intent_analysis", "plan_generation")
-    g.add_edge("plan_generation", "tool_execution")
-    g.add_edge("tool_execution", "validation")
+    # Initial linear flow
+    graph.set_entry_point("intent_analysis")
+    graph.add_edge("intent_analysis", "plan_generation")
+    graph.add_edge("plan_generation", "tool_execution")
+    graph.add_edge("tool_execution", "validation")
 
-    # Condicional: continua ou finaliza
-    g.add_conditional_edges(
+    # Conditional flow: continue or finish
+    graph.add_conditional_edges(
         "validation",
         should_continue,
         {
@@ -420,10 +459,10 @@ def build_graph() -> StateGraph:
         },
     )
 
-    g.add_edge("completion", END)
+    graph.add_edge("completion", END)
 
-    return g.compile()
+    return graph.compile()
 
 
-# Instância compilada do grafo (singleton)
+# Compiled graph instance (singleton)
 agent_graph = build_graph()
