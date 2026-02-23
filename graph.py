@@ -25,7 +25,7 @@ from tools import ALL_TOOLS, search_web, open_url, click_element, type_text, ext
 # Mapa nome → função
 TOOL_MAP = {t.name: t for t in ALL_TOOLS}
 
-# ── Estado do agente ──────────────────────────────────────────────────────────
+# Estado do agente
 
 class AgentState(TypedDict):
     user_input: str          # Mensagem original do usuário
@@ -38,11 +38,11 @@ class AgentState(TypedDict):
     error: str               # Mensagem de erro (se houver)
     step_log: list           # Log detalhado para Chainlit
 
-# ── LLM ──────────────────────────────────────────────────────────────────────
+# LLM
 
 llm = get_llm()
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# Helpers
 
 def extract_json(text: str) -> Any:
     """Extrai o primeiro bloco JSON válido de uma string."""
@@ -96,7 +96,7 @@ def semantic_url_check(intent: str, url: str) -> bool:
     return True
 
 
-# ── Nós do grafo ──────────────────────────────────────────────────────────────
+# Nós do grafo
 
 def intent_analysis(state: AgentState) -> AgentState:
     """
@@ -372,7 +372,7 @@ Responda em português, de forma concisa e útil."""
     }
 
 
-# ── Routers (condicionais) ────────────────────────────────────────────────────
+# Routers (condicionais)
 
 def should_continue(state: AgentState) -> str:
     """Decide se deve continuar executando ou ir para completion."""
@@ -391,7 +391,7 @@ def should_continue(state: AgentState) -> str:
     return "tool_execution"
 
 
-# ── Construção do grafo ───────────────────────────────────────────────────────
+# Construção do grafo
 
 def build_graph() -> StateGraph:
     """Constrói e compila o grafo LangGraph."""
