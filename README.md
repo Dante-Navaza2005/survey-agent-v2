@@ -1,79 +1,79 @@
-# 🤖 Agente Web Autônomo
+# Autonomous Web Agent
 
-Agente autônomo de navegação web com LangChain, LangGraph, LangSmith e Chainlit.
+Autonomous web navigation agent built with LangChain, LangGraph, LangSmith, and Chainlit.
 
-## Arquitetura
+## Architecture
 
 ```
 browser-agent/
-├── llm.py          # Configuração do modelo Llama 3.2:3b via Ollama
-├── tools.py        # Tools de automação do browser (Playwright)
-├── graph.py        # Fluxo LangGraph com 5 nós
-├── main.py         # Interface Chainlit
+├── llm.py          # Llama 3.2:3b model configuration via Ollama
+├── tools.py        # Browser automation tools (Playwright)
+├── graph.py        # LangGraph flow with 5 nodes
+├── main.py         # Chainlit interface
 └── requirements.txt
 ```
 
-## Fluxo do Agente
+## Agent Flow
 
 ```
-Usuário → Intent Analysis → Plan Generation → Tool Execution → Validation ↺ → Completion
+User -> Intent Analysis -> Plan Generation -> Tool Execution -> Validation -> (loop) -> Completion
 ```
 
-1. **Intent Analysis** – Analisa semanticamente a intenção (diferencia "YouTube" de sites alternativos)
-2. **Plan Generation** – Gera plano estruturado em JSON (nunca executa sem planejar)
-3. **Tool Execution** – Executa cada tool do plano
-4. **Validation** – Valida o resultado antes de avançar
-5. **Completion** – Sintetiza e apresenta o resultado final
+1. **Intent Analysis** - Semantically analyzes the request (distinguishes "YouTube" from alternative sites)
+2. **Plan Generation** - Produces a structured JSON plan (never executes without planning)
+3. **Tool Execution** - Runs each tool step in the plan
+4. **Validation** - Validates each result before proceeding
+5. **Completion** - Synthesizes and presents the final result
 
-## Instalação
+## Installation
 
 ```bash
-# 1. Instalar dependências Python
+# 1. Install Python dependencies
 pip install -r requirements.txt
 
-# 2. Instalar browsers do Playwright
+# 2. Install Playwright browser binaries
 playwright install chromium
 
-# 3. Instalar e iniciar Ollama com Llama 3.2:3b
+# 3. Install and start Ollama with Llama 3.2:3b
 # https://ollama.ai
 ollama pull llama3.2:3b
 ollama serve
 
-# 4. (Opcional) Configurar LangSmith
-export LANGCHAIN_API_KEY="lsv2_sua_chave_aqui"
+# 4. (Optional) Configure LangSmith
+export LANGCHAIN_API_KEY="lsv2_your_key_here"
 ```
 
-## Execução
+## Run
 
 ```bash
 chainlit run main.py -w
 ```
 
-Acesse: http://localhost:8000
+Open: http://localhost:8000
 
-## Tools Disponíveis
+## Available Tools
 
-| Tool | Descrição |
-|------|-----------|
-| `search_web` | Busca no DuckDuckGo para descobrir URLs oficiais |
-| `open_url` | Abre URL no browser controlado |
-| `click_element` | Clica em elemento por CSS selector ou texto |
-| `type_text` | Digita texto em campo de input |
-| `extract_page_elements` | Extrai elementos interativos visíveis da página |
-| `get_current_url` | Retorna URL atual do browser |
-| `scroll_page` | Rola a página para cima ou para baixo |
+| Tool | Description |
+|------|-------------|
+| `search_web` | Searches DuckDuckGo to discover official URLs |
+| `open_url` | Opens a URL in the controlled browser |
+| `click_element` | Clicks an element by CSS selector or text |
+| `type_text` | Types text into an input field |
+| `extract_page_elements` | Extracts visible interactive page elements |
+| `get_current_url` | Returns the current browser URL |
+| `scroll_page` | Scrolls the page up or down |
 
-## Regras Semânticas
+## Semantic Rules
 
-- **YouTube**: URL deve conter `youtube.com` (não aceita ytroulette.com etc.)
-- **Sites conhecidos**: Verifica correspondência entre intenção e domínio
-- **Sem URLs hardcoded**: Sempre usa `search_web` para descobrir URLs oficiais
-- **Validação por passo**: Cada ação é validada antes de avançar
+- **YouTube**: URL must contain `youtube.com` (rejects alternative domains)
+- **Known domains**: Validates alignment between intent and target domain
+- **No hardcoded URLs**: Always uses `search_web` to discover official URLs
+- **Step-by-step validation**: Each action is validated before moving forward
 
-## Exemplos
+## Examples
 
 ```
-"Entre no YouTube e abra um vídeo de música brasileira"
-"Pesquise apartamentos no Airbnb em São Paulo"
-"Acesse o site do Banco do Brasil e encontre o telefone de atendimento"
+"Open YouTube and play a Brazilian music video"
+"Search Airbnb apartments in Sao Paulo"
+"Open the Bank of America website and find customer service phone number"
 ```
